@@ -127,8 +127,14 @@ function findActivationByToken(token) {
 }
 function findActivationByDevice(deviceId) {
   const db = load();
-  // return latest for device
-  return db.activations.find(a => a.deviceId === deviceId);
+  const acts = db.activations.filter(a => a.deviceId === deviceId);
+  if (!acts.length) return undefined;
+  acts.sort((a, b) => {
+    const tb = new Date(b.lastSeen || b.createdAt || 0).getTime();
+    const ta = new Date(a.lastSeen || a.createdAt || 0).getTime();
+    return tb - ta;
+  });
+  return acts[0];
 }
 function upsertActivation({ keyId, keyText, deviceId, androidId, wifiIp, bssid, buildFp, token, expiresAt }) {
   const db = load();

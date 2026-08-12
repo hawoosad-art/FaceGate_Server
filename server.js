@@ -86,6 +86,10 @@ function keyStatus(k) {
   if (isExpired(k.expires_at)) return 'expired';
   return 'active';
 }
+function publicUrl(req, pth) {
+  const proto = String(req.get('x-forwarded-proto') || req.protocol || 'http').split(',')[0].trim();
+  return `${proto}://${req.get('host')}${pth}`;
+}
 
 // ─────────────────────────────────────────────
 // HEALTH
@@ -201,7 +205,7 @@ app.post('/api/check_trial', (req, res) => {
     return res.json({ available: false, message: "Trial already used", expires_at: act.expiresAt });
   }
   if (used >= rec.max_devices && rec.max_devices !== 0) {
-    // for trial key max_devices usually 999 but we check
+    return res.json({ available: false, message: "Trial limit reached" });
   }
   return res.json({ available: true, message: "Trial available", expires_at: null });
 });
@@ -220,6 +224,10 @@ app.post('/api/activate_trial', (req, res) => {
   if (keyStatus(rec) !== 'active') return res.json({ success: false, message: "Trial unavailable", token: null });
   const existing = db.findActivation(device, rec.key);
   if (existing) return res.json({ success: false, message: "Trial already used for this device", token: null });
+  const used = db.countActiveDevices(rec.key);
+  if (used >= rec.max_devices && rec.max_devices !== 0) {
+    return res.json({ success: false, message: "Trial limit reached", token: null });
+  }
 
   const token = db.generateToken(device, rec.key, rec.id);
   const expiresAt = new Date(Date.now() + 1*3600*1000).toISOString();
@@ -679,7 +687,7 @@ app.post('/api/psd/upload', psdUpload.single('psd'), (req,res)=>{
     if(!req.file) return res.status(400).json({error:'No PSD — send field psd'});
     const stat = fs.statSync(req.file.path);
     const fn = path.basename(req.file.path);
-    res.json({ok:true, filename: fn, original: req.file.originalname, size: stat.size, url: `https://${req.get('host')}/psd/${encodeURIComponent(fn)}`});
+    res.json({ok:true, filename: fn, original: req.file.originalname, size: stat.size, url: `/psd/${encodeURIComponent(fn)}`});
   }catch(e){ res.status(500).json({error:e.message}); }
 });
 app.post('/upload/psd', psdUpload.single('psd'), (req,res)=>{
@@ -687,7 +695,7 @@ app.post('/upload/psd', psdUpload.single('psd'), (req,res)=>{
     if(!req.file) return res.status(400).json({error:'No PSD'});
     const stat = fs.statSync(req.file.path);
     const fn = path.basename(req.file.path);
-    res.json({ok:true, filename: fn, size: stat.size, url: `https://${req.get('host')}/psd/${encodeURIComponent(fn)}`});
+    res.json({ok:true, filename: fn, size: stat.size, url: `/psd/${encodeURIComponent(fn)}`});
   }catch(e){ res.status(500).json({error:e.message}); }
 });
 app.get('/api/psd/list', (req,res)=>{
@@ -696,15 +704,17 @@ app.get('/api/psd/list', (req,res)=>{
     const files = fs.readdirSync(PSD_DIR).filter(f=> /\.(psd|psb)$/i.test(f)).map(f=>{
       const full=path.join(PSD_DIR,f);
       const stat=fs.statSync(full);
-      return {filename:f, size:stat.size, mtime:stat.mtime.toISOString(), url:`https://${req.get('host')}/psd/${encodeURIComponent(f)}`};
-    }).sort((a,b)=> new Date(b.mtime)-new Date(a.mtime));
+      if(!stat.isFile()) return null;
+      return {filename:f, size:stat.size, mtime:stat.mtime.toISOString(), url:`/psd/${encodeURIComponent(f)}`};
+    }).filter(Boolean).sort((a,b)=> new Date(b.mtime)-new Date(a.mtime));
     res.json(files);
   }catch(e){ res.status(500).json({error:e.message}); }
 });
 app.get('/psd/:filename', (req,res)=>{
   const fn = path.basename(req.params.filename);
+  if(!/\.(psd|psb)$/i.test(fn)) return res.status(404).send('Not found');
   const full = path.join(PSD_DIR, fn);
-  if(!fs.existsSync(full)) return res.status(404).send('Not found');
+  if(!fs.existsSync(full) || !fs.statSync(full).isFile()) return res.status(404).send('Not found');
   res.sendFile(full);
 });
 
@@ -712,10 +722,14 @@ app.get('/psd/:filename', (req,res)=>{
 app.get('/api/downloads', (req,res)=>{
   try{
     if(!fs.existsSync(UPLOAD_DIR)) return res.json([]);
-    const files = fs.readdirSync(UPLOAD_DIR).filter(f=>!f.startsWith('.')).map(f=>{
+    const files = fs.readdirSync(UPLOAD_DIR).filter(f=>{
+      if(f.startsWith('.')) return false;
+      const full = path.join(UPLOAD_DIR,f);
+      try { return fs.statSync(full).isFile(); } catch { return false; }
+    }).map(f=>{
       const full = path.join(UPLOAD_DIR,f);
       const stat = fs.statSync(full);
-      return { filename:f, size:stat.size, mtime:stat.mtime.toISOString(), url:`https://${req.get('host')}/files/${encodeURIComponent(f)}`, is_latest: f==='latest.apk' || f==='latest-module.zip' };
+      return { filename:f, size:stat.size, mtime:stat.mtime.toISOString(), url: publicUrl(req, `/files/${encodeURIComponent(f)}`), is_latest: f==='latest.apk' || f==='latest-module.zip' };
     }).sort((a,b)=> new Date(b.mtime)-new Date(a.mtime));
     res.json(files);
   }catch(e){ res.status(500).json({error:e.message}); }
@@ -725,14 +739,14 @@ app.get('/api/downloads', (req,res)=>{
 app.get('/files/:filename', (req,res)=>{
   const fn = path.basename(req.params.filename);
   const full = path.join(UPLOAD_DIR, fn);
-  if(!fs.existsSync(full)) return res.status(404).send('Not found');
+  if(!fs.existsSync(full) || !fs.statSync(full).isFile()) return res.status(404).send('Not found');
   res.download(full, fn);
 });
 // alias /download/:filename
 app.get('/download/:filename', (req,res)=>{
   const fn = path.basename(req.params.filename);
   const full = path.join(UPLOAD_DIR, fn);
-  if(!fs.existsSync(full)) return res.status(404).send('Not found');
+  if(!fs.existsSync(full) || !fs.statSync(full).isFile()) return res.status(404).send('Not found');
   res.download(full, fn);
 });
 

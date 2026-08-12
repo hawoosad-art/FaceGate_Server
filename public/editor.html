@@ -97,6 +97,7 @@ a{color:#60a5fa;text-decoration:none}
         </form>
         <div id="directUploadStatus" style="font-size:11px;color:var(--muted);margin-top:6px"></div>
       </div>
+      <div id="serverPsds" style="margin-top:12px"></div>
       <div id="layers" style="margin-top:12px"></div>
       <div id="noLayers" style="color:var(--muted);font-size:12px;text-align:center;margin-top:16px;display:none">No PSD loaded.</div>
     </div>
@@ -159,6 +160,9 @@ a{color:#60a5fa;text-decoration:none}
 function showStatus(msg, color){
   const el = document.getElementById('psdStatus');
   if(el){ el.textContent = msg; el.style.color = color || '#60a5fa'; }
+}
+function esc(s){
+  return String(s??'').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 }
 function showLoading(msg){
   const ov = document.getElementById('loadingOverlay');
@@ -361,7 +365,7 @@ function buildLayerList(){
     const info=document.createElement('div');
     info.className='layer-info';
     const name = layer.name || '(unnamed)';
-    info.innerHTML=`<div class="layer-name">${name}</div><div class="layer-meta">${isGroup?'Group': isText?'Text • '+(layer.text?.text?.slice(0,20)||'') : 'Image • '+(layer.right-layer.left||0)+'×'+(layer.bottom-layer.top||0)}</div>`;
+    info.innerHTML=`<div class="layer-name">${esc(name)}</div><div class="layer-meta">${isGroup?'Group': isText?'Text • '+esc((layer.text?.text||'').slice(0,20)) : 'Image • '+(layer.right-layer.left||0)+'×'+(layer.bottom-layer.top||0)}</div>`;
     div.appendChild(thumb); div.appendChild(info);
     div.onclick=()=>selectLayer(idx);
     el.appendChild(div);
@@ -378,11 +382,11 @@ function selectLayer(idx){
   document.getElementById('imageProps').classList.toggle('hidden', !!layer.text || !!layer.children);
   document.getElementById('layerInfo').classList.remove('hidden');
   document.getElementById('layerInfo').innerHTML = `
-    <div><b>Name:</b> ${layer.name||'-'}</div>
+    <div><b>Name:</b> ${esc(layer.name||'-')}</div>
     <div><b>Pos:</b> ${layer.left},${layer.top} → ${layer.right},${layer.bottom}</div>
     <div><b>Size:</b> ${(layer.right-layer.left)}×${(layer.bottom-layer.top)}</div>
     <div><b>Opacity:</b> ${layer.opacity ?? 255}</div>
-    <div><b>Blend:</b> ${layer.blendMode||'-'}</div>
+    <div><b>Blend:</b> ${esc(layer.blendMode||'-')}</div>
   `;
   if(layer.text){
     const t = layer.text;
@@ -404,12 +408,12 @@ function selectLayer(idx){
 function rgbToHex(c){
   if(!c) return '#ffffff';
   if(typeof c === 'string') return c;
-  if(Array.isArray(c) && c.length>=3){
-    const r=Math.round(c[0]*255), g=Math.round(c[1]*255), b=Math.round(c[2]*255);
-    return '#'+[r,g,b].map(x=>x.toString(16).padStart(2,'0')).join('');
-  }
-  if(c.r!==undefined) return '#'+[c.r,c.g,c.b].map(x=>Math.round(x).toString(16).padStart(2,'0')).join('');
-  return '#ffffff';
+  let r,g,b;
+  if(Array.isArray(c) && c.length>=3){ r=c[0]; g=c[1]; b=c[2]; }
+  else if(c.r!==undefined){ r=c.r; g=c.g; b=c.b; }
+  else return '#ffffff';
+  if(r<=1 && g<=1 && b<=1){ r*=255; g*=255; b*=255; }
+  return '#'+[r,g,b].map(x=>Math.round(Math.max(0,Math.min(255,x))).toString(16).padStart(2,'0')).join('');
 }
 function hexToRgb(hex){
   const n=parseInt(hex.slice(1),16);
@@ -538,7 +542,8 @@ async function uploadPsdToServer(){
     const r=await fetch('/api/psd/upload', {method:'POST', body: fd});
     const j=await r.json();
     if(j.ok){
-      alert('Saved to VPS: '+j.filename+' ('+(j.size/1024).toFixed(1)+' KB)\n'+j.url);
+      alert('Saved to VPS: '+j.filename+' ('+(j.size/1024).toFixed(1)+' KB)');
+      loadServerPsds();
     } else {
       alert('Upload failed: '+(j.error||'unknown'));
     }
@@ -558,7 +563,9 @@ async function directUpload(e){
     const r=await fetch('/api/psd/upload', {method:'POST', body: fd});
     const j=await r.json();
     if(j.ok){
-      status.innerHTML='✅ Saved: <a href="'+j.url+'" target="_blank">'+j.filename+'</a> ('+(j.size/1024).toFixed(1)+' KB)';
+      const href = j.url || ('/psd/'+encodeURIComponent(j.filename));
+      status.innerHTML='✅ Saved: <a href="'+esc(href)+'" target="_blank">'+esc(j.filename)+'</a> ('+(j.size/1024).toFixed(1)+' KB)';
+      loadServerPsds();
     } else {
       status.textContent='❌ '+(j.error||'failed');
     }
@@ -716,8 +723,38 @@ dz.addEventListener('dragover', e=>{ e.preventDefault(); dz.classList.add('drago
 dz.addEventListener('dragleave', ()=> dz.classList.remove('dragover'));
 dz.addEventListener('drop', e=>{ e.preventDefault(); dz.classList.remove('dragover'); const f=e.dataTransfer.files[0]; if(f) handleFile(f); });
 
+async function loadServerPsds(){
+  const box = document.getElementById('serverPsds');
+  if(!box) return;
+  try{
+    const r = await fetch('/api/psd/list');
+    const j = await r.json();
+    if(!Array.isArray(j) || !j.length){ box.innerHTML=''; return; }
+    box.innerHTML = '<div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:6px">Saved on VPS</div>' +
+      j.map(f => '<div class="layer" data-fn="'+esc(f.filename)+'"><div class="layer-info"><div class="layer-name">'+esc(f.filename)+'</div><div class="layer-meta">'+(f.size/1024).toFixed(1)+' KB</div></div></div>').join('');
+    box.querySelectorAll('.layer').forEach(el => {
+      el.onclick = () => loadServerPsd(el.getAttribute('data-fn'));
+    });
+  }catch{ box.innerHTML=''; }
+}
+async function loadServerPsd(filename){
+  if(!filename) return;
+  showLoading('Loading '+filename+'…');
+  try{
+    const r = await fetch('/psd/'+encodeURIComponent(filename));
+    if(!r.ok) throw new Error('Not found on server');
+    const blob = await r.blob();
+    const file = new File([blob], filename, {type:'image/vnd.adobe.photoshop'});
+    await handleFile(file);
+  }catch(e){
+    hideLoading();
+    showStatus('❌ '+e.message, '#f87171');
+  }
+}
+
 // Log that the page is ready and ag-psd is available
 console.log('Editor ready. ag-psd available:', !!(window.AgPsd || window.agPsd || window.ag_psd));
+loadServerPsds();
 </script>
 </body>
 </html>
