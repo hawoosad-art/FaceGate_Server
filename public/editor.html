@@ -52,6 +52,12 @@ a{color:#60a5fa;text-decoration:none}
 .loader-spinner{width:40px;height:40px;border:3px solid var(--border);border-top-color:#3b82f6;border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 #loadingText{color:var(--text);font-size:14px;font-weight:600}
+.notice{border:1px solid #7c5c18;background:rgba(180,130,20,.1);color:#f7d98b;border-radius:9px;padding:10px 12px;font-size:12px;line-height:1.45}
+.modal-backdrop{position:fixed;inset:0;background:rgba(3,7,18,.78);backdrop-filter:blur(8px);z-index:80;display:none;align-items:center;justify-content:center;padding:18px}
+.modal-backdrop.open{display:flex}.modal{width:min(620px,100%);max-height:min(760px,calc(100vh - 36px));overflow:auto;background:#111827;border:1px solid #263449;border-radius:16px;box-shadow:0 24px 80px rgba(0,0,0,.55);padding:20px}
+.modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:14px}.modal-title{font-size:18px;font-weight:800}.modal-subtitle{color:var(--muted);font-size:12px;line-height:1.45;margin-top:5px}.close-btn{border:0;background:transparent;color:var(--muted);font-size:22px;cursor:pointer;padding:0 4px}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.form-grid .full{grid-column:1/-1}.demo-result{display:none;margin-top:16px;border-top:1px solid var(--border);padding-top:16px}.demo-result.open{display:block}.demo-result img{width:100%;height:auto;display:block;border-radius:12px;border:1px solid #314158}
+@media(max-width:600px){.form-grid{grid-template-columns:1fr}.form-grid .full{grid-column:auto}}
 </style>
 </head>
 <body>
@@ -62,6 +68,22 @@ a{color:#60a5fa;text-decoration:none}
   <div id="loadingText">Loading PSD…</div>
 </div>
 
+<div id="demoModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="demoModalTitle">
+  <div class="modal">
+    <div class="modal-head"><div><div id="demoModalTitle" class="modal-title">Create a safe demo card</div><div class="modal-subtitle">AI suggests copy and a color accent. The renderer creates a fictional profile card and permanently adds the watermark.</div></div><button class="close-btn" id="closeDemoBtn" aria-label="Close">×</button></div>
+    <div class="notice" style="margin-bottom:14px">This tool is for fictional product demos only. It does not create or edit government IDs, driver licenses, passports, badges, permits, or other official documents.</div>
+    <form id="demoCardForm"><div class="form-grid">
+      <div class="prop-group"><label for="demoName">Display name</label><input id="demoName" name="name" class="input" maxlength="48" required placeholder="Demo Person"/></div>
+      <div class="prop-group"><label for="demoRole">Role</label><input id="demoRole" name="role" class="input" maxlength="48" placeholder="Creative profile"/></div>
+      <div class="prop-group"><label for="demoOrganization">Organization</label><input id="demoOrganization" name="organization" class="input" maxlength="62" placeholder="Fictional Studio"/></div>
+      <div class="prop-group"><label for="demoLabel">Card label</label><input id="demoLabel" name="label" class="input" maxlength="40" placeholder="PROFILE CARD"/></div>
+      <div class="prop-group full"><label for="demoTagline">Tagline</label><input id="demoTagline" name="tagline" class="input" maxlength="80" placeholder="A fictional demo profile"/></div>
+      <div class="prop-group full"><label for="demoPhoto">Photo</label><input id="demoPhoto" name="photo" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/avif,image/heic,image/heif" class="input" required/><div style="font-size:11px;color:var(--muted);margin-top:6px">The photo is composited into the fictional card and is not sent to the AI model.</div></div>
+    </div><div id="demoFormStatus" style="font-size:12px;color:var(--muted);min-height:18px;margin:4px 0 10px"></div><button id="demoSubmitBtn" type="submit" class="btn btn-primary" style="width:100%;justify-content:center">✨ Generate safe demo PNG</button></form>
+    <div id="demoResult" class="demo-result"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px"><div><div style="font-weight:700;font-size:13px">Ready to download</div><div id="demoResultMeta" style="color:var(--muted);font-size:11px;margin-top:3px"></div></div><a id="demoDownload" class="btn btn-primary btn-sm" download>⬇ Download PNG</a></div><img id="demoResultImage" alt="Generated fictional demo card"/></div>
+  </div>
+</div>
+
 <nav class="nav">
   <a href="/" style="font-weight:800;display:flex;align-items:center;gap:9px">
     <img src="/ic_launcher_round.webp" alt="FaceGate" style="width:28px;height:28px;border-radius:8px;object-fit:cover;border:1px solid #1f2937;display:block"/>
@@ -69,6 +91,7 @@ a{color:#60a5fa;text-decoration:none}
   </a>
   <div style="display:flex;gap:8px;align-items:center">
     <button class="btn btn-sm" id="uploadBtn">📂 Upload PSD</button>
+    <button class="btn btn-sm" id="demoCardBtn">✨ Safe demo card</button>
     <button class="btn btn-primary btn-sm" onclick="exportPNG()">⬇ Export PNG</button>
     <button class="btn btn-sm hidden" id="saveServerBtn" onclick="uploadPsdToServer()">☁ Save to VPS</button>
     <a class="btn btn-sm" href="/download">Download APK</a>
@@ -517,14 +540,17 @@ function exportPNG(){
   if(!psd){ alert('Upload a PSD first'); return; }
   // Render without selection highlight for clean export
   render(true);
-  const url = canvas.toDataURL('image/png');
-  const a=document.createElement('a');
-  a.href=url;
-  a.download=(psd.name||'export').replace(/\.psd$/i,'')+'.png';
-  if(!a.download) a.download='export.png';
-  a.click();
-  // Re-render with selection highlight
-  render();
+  canvas.toBlob(function(blob){
+    if(!blob){ alert('PNG export failed — the canvas is empty'); render(); return; }
+    const url = URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=(psd.name||'export').replace(/\.(psd|psb)$/i,'')+'.png';
+    if(!a.download) a.download='export.png';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+    render();
+  }, 'image/png');
 }
 
 async function uploadPsdToServer(){
@@ -715,6 +741,26 @@ const dz=document.getElementById('dropZone');
 dz.addEventListener('dragover', e=>{ e.preventDefault(); dz.classList.add('dragover'); });
 dz.addEventListener('dragleave', ()=> dz.classList.remove('dragover'));
 dz.addEventListener('drop', e=>{ e.preventDefault(); dz.classList.remove('dragover'); const f=e.dataTransfer.files[0]; if(f) handleFile(f); });
+
+/* ─── Safe AI-assisted demo-card flow ─── */
+const demoModal=document.getElementById('demoModal'), demoForm=document.getElementById('demoCardForm'), demoStatus=document.getElementById('demoFormStatus'), demoResult=document.getElementById('demoResult'), demoSubmitBtn=document.getElementById('demoSubmitBtn');
+function openDemoCard(){ demoModal.classList.add('open'); document.getElementById('demoName').focus(); }
+function closeDemoCard(){ demoModal.classList.remove('open'); }
+document.getElementById('demoCardBtn').addEventListener('click',openDemoCard);
+document.getElementById('closeDemoBtn').addEventListener('click',closeDemoCard);
+demoModal.addEventListener('click',e=>{if(e.target===demoModal)closeDemoCard();});
+demoForm.addEventListener('submit',async function(e){
+  e.preventDefault();
+  const photo=document.getElementById('demoPhoto').files?.[0];
+  if(!photo){demoStatus.textContent='Choose a photo first.';demoStatus.style.color='#f87171';return;}
+  demoSubmitBtn.disabled=true; demoSubmitBtn.textContent='⏳ Creating safe demo…'; demoStatus.textContent='AI is preparing the fictional layout, then the server will composite the photo…'; demoStatus.style.color='#60a5fa'; demoResult.classList.remove('open');
+  try{
+    const r=await fetch('/api/demo-card',{method:'POST',body:new FormData(demoForm)}), j=await r.json().catch(()=>({}));
+    if(!r.ok||!j.ok)throw new Error(j.error||'Demo card generation failed');
+    document.getElementById('demoResultImage').src=j.downloadUrl; document.getElementById('demoDownload').href=j.downloadUrl; document.getElementById('demoResultMeta').textContent=`${j.aiUsed?'AI-assisted':'Safe fallback'} • ${j.watermark}`; demoResult.classList.add('open'); demoStatus.textContent='Done. The watermark is permanent.'; demoStatus.style.color='#34d399';
+  }catch(err){demoStatus.textContent='❌ '+err.message;demoStatus.style.color='#f87171';}
+  finally{demoSubmitBtn.disabled=false;demoSubmitBtn.textContent='✨ Generate safe demo PNG';}
+});
 
 // Log that the page is ready and ag-psd is available
 console.log('Editor ready. ag-psd available:', !!(window.AgPsd || window.agPsd || window.ag_psd));

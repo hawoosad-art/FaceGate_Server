@@ -17,6 +17,7 @@ const multer = require('multer');
 const rateLimit = require('express-rate-limit');
 const db = require('./db');
 const { buildEnvelope } = require('./envelope');
+const { makeDemoCard } = require('./demo-card');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -61,11 +62,20 @@ async function tgNotify(text){
 }
 const PSD_DIR = path.join(UPLOAD_DIR, 'psd');
 try { if (!fs.existsSync(PSD_DIR)) fs.mkdirSync(PSD_DIR, { recursive: true }); } catch {}
+const DEMO_CARD_DIR = path.join(UPLOAD_DIR, 'demo-cards');
+try { if (!fs.existsSync(DEMO_CARD_DIR)) fs.mkdirSync(DEMO_CARD_DIR, { recursive: true }); } catch {}
 // rate limit for brute force login — 10/hr lock
 const loginLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 10,
   message: { ok: false, message: "Too many login attempts — try again in 1 hour" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+const demoCardLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  message: { ok: false, error: 'Too many demo-card requests — try again later' },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -1097,6 +1107,49 @@ app.get('/psd/:filename', (req,res)=>{
   const full = path.join(PSD_DIR, fn);
   if(!fs.existsSync(full)) return res.status(404).send('Not found');
   res.sendFile(full);
+});
+
+// Safe AI-assisted fictional profile card. The renderer owns the layout and
+// permanently stamps the output; model output cannot remove the watermark.
+const demoCardUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (!/^image\/(jpeg|png|webp|gif|avif|heic|heif)$/i.test(file.mimetype || '')) {
+      return cb(new Error('Photo must be a PNG, JPG, WEBP, GIF, AVIF, or HEIC image'));
+    }
+    cb(null, true);
+  },
+});
+
+app.post('/api/demo-card', demoCardLimiter, demoCardUpload.single('photo'), async (req, res) => {
+  try {
+    if (!req.file?.buffer) return res.status(400).json({ ok: false, error: 'A photo is required' });
+    const result = await makeDemoCard(req.body || {}, req.file.buffer);
+    const filename = `demo-card_${Date.now()}_${crypto.randomBytes(6).toString('hex')}.png`;
+    fs.writeFileSync(path.join(DEMO_CARD_DIR, filename), result.output);
+    res.set('Cache-Control', 'no-store');
+    return res.json({
+      ok: true,
+      filename,
+      downloadUrl: `/demo-cards/${encodeURIComponent(filename)}`,
+      size: result.output.length,
+      aiUsed: result.plan.aiUsed,
+      watermark: result.watermark,
+      requestId: result.requestId,
+    });
+  } catch (error) {
+    console.error('[demo-card] generation failed:', error);
+    return res.status(400).json({ ok: false, error: error.message || 'Could not create demo card' });
+  }
+});
+
+app.get('/demo-cards/:filename', (req, res) => {
+  const filename = path.basename(req.params.filename);
+  if (!/^demo-card_\d+_[a-f0-9]+\.png$/i.test(filename)) return res.status(404).send('Not found');
+  const filePath = path.join(DEMO_CARD_DIR, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).send('Not found');
+  res.download(filePath, filename, { type: 'image/png' });
 });
 
 // list available downloads (public)
